@@ -5,6 +5,10 @@ import time
 
 from scapy.all import IntField, Packet
 
+# Khắc phục lỗi tương thích trên Windows (vì Windows không hỗ trợ socket.MSG_DONTWAIT)
+if not hasattr(socket, "MSG_DONTWAIT"):
+    socket.MSG_DONTWAIT = 0
+
 
 class PacketHeader(Packet):
     name = "PacketHeader"
@@ -97,7 +101,13 @@ def main():
             to_socket.sendto(pkt, (to_addr, to_port))
 
         if start_stage < 10 or random.randint(1, 100) > 20:
-            pkt, address = from_socket.recvfrom(2048, socket.MSG_DONTWAIT)
+            # Xử lý đọc socket an toàn trên cả Windows và Linux
+            try:
+                from_socket.setblocking(False)
+                pkt, address = from_socket.recvfrom(2048)
+            finally:
+                from_socket.settimeout(0.1)
+
             if address[1] != receiver_port and address[1] != bind_port:
                 sender_port.pop(0)
                 sender_port.append(address[1])

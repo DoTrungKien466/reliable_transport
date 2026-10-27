@@ -1,28 +1,76 @@
 import argparse
 import socket
+import sys
 
 from utils import PacketHeader, compute_checksum
 
 
+def make_ack(seq_num):
+    """Tạo gói ACK cá thể (Individual ACK với seq_num bằng đúng gói nhận được)."""
+    pkt_header = PacketHeader(type=3, seq_num=seq_num, length=0)
+    pkt_header.checksum = compute_checksum(pkt_header / b"")
+    return bytes(pkt_header / b"")
+
+
+def parse_pkt(raw_bytes):
+    if len(raw_bytes) < 16:
+        return None, b""
+    pkt = PacketHeader(raw_bytes)
+    chk = pkt.checksum
+    pkt.checksum = 0
+    if compute_checksum(pkt) != chk:
+        return None, b""
+    payload = bytes(pkt.payload)
+    return pkt, payload
+
+
 def receiver(receiver_ip, receiver_port, window_size):
-    """TODO: Listen on socket and print received message to sys.stdout."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind((receiver_ip, receiver_port))
+
+    expected_seq = 1
+    buffer = {}
+    connected = False
+
     while True:
-        # Receive packet; address includes both IP and port
-        pkt, address = s.recvfrom(2048)
+        raw_bytes, sender_addr = s.recvfrom(2048)
+        pkt, payload = parse_pkt(raw_bytes)
 
-        # Extract header and payload
-        pkt_header = PacketHeader(pkt[:16])
-        msg = pkt[16 : 16 + pkt_header.length]
+        if not pkt:
+            continue
 
-        # Verity checksum
-        pkt_checksum = pkt_header.checksum
-        pkt_header.checksum = 0
-        computed_checksum = compute_checksum(pkt_header / msg)
-        if pkt_checksum != computed_checksum:
-            print("checksums not match")
-        print(msg)
+        # 1. Xử lý gói START
+        if pkt.type == 0:
+            if not connected:
+                connected = True
+            s.sendto(make_ack(1), sender_addr)
+            continue
+
+        if not connected:
+            continue
+
+        # 2. Xử lý gói DATA (Individual ACK)
+        if pkt.type == 2:
+            seq = pkt.seq_num
+            # Gửi ACK riêng cho chính gói tin vừa nhận được
+            if seq < expected_seq + window_size:
+                s.sendto(make_ack(seq), sender_addr)
+                if seq >= expected_seq:
+                    buffer[seq] = payload
+
+                # Xuất dữ liệu in-order liên tiếp ra stdout
+                while expected_seq in buffer:
+                    sys.stdout.buffer.write(buffer[expected_seq])
+                    sys.stdout.buffer.flush()
+                    del buffer[expected_seq]
+                    expected_seq += 1
+
+        # 3. Xử lý gói END
+        elif pkt.type == 1:
+            s.sendto(make_ack(pkt.seq_num), sender_addr)
+            break
+
+    s.close()
 
 
 def main():
